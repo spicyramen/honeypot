@@ -6,6 +6,7 @@ from absl import app
 from absl import flags
 from absl import logging
 
+from conf import whitelist
 from freeswitch import Client
 from freeswitch.Connection import ESLError
 from notifications import Publisher
@@ -92,7 +93,7 @@ class ESLHandler(object):
                 raise ValueError('Invalid host')
 
             client = Client.Client(host=self.host)
-            logging.info('Connecting to host %s ...' % self.host)
+            logging.info('Connecting to Freeswitch: %s ...' % self.host)
             client.connect()
             if not client.connected():
                 raise ValueError('Unable to connect to %s' % self.host)
@@ -135,9 +136,8 @@ class ESLHandler(object):
                                 logging.error('SIP Error. Call ended %s %s %s %s' % (uuid,
                                                                                      sip_call_id, sip_term_status,
                                                                                      sip_invite_failure_phrase))
-                        logging.info('Remote host: %s ' % sip_remote_ip_addr)
-                        # Notify Subscribers.
-
+                        logging.info('Send event to Threat Analyzer...')
+                        # Notify Network.
                         call_info = {"Honeypot": pnconfig.uuid,
                                      "RemoteIpv4": sip_remote_ip_addr,
                                      "SipProtocol": sip_protocol,
@@ -146,8 +146,17 @@ class ESLHandler(object):
                                      "SipFromStripped": sip_from_stripped,
                                      "SipTo": sip_to_user,
                                      "RequestUri": sip_req_uri,
+                                     "SipCallid": sip_call_id
                                      }
-                        pubnub.publish(Publisher.CHANNEL, call_info)
+                        # Use PubSub notification systems.
+                        if sip_remote_ip_addr not in whitelist.WHITE_LIST:
+                            logging.warning('Threat detected. Remote SIP host: %s ' % sip_remote_ip_addr)
+                            logging.info('Call info: %r' % call_info)
+                            pubnub.publish(Publisher.CHANNEL, call_info)
+                        else:
+                            logging.warning(
+                                'Detected IP Address in white list: %s. No notification was sent. Call info: %r' % (
+                                sip_remote_ip_addr, call_info))
                 else:
                     logging.info('Listening...')
 

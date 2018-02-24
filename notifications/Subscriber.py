@@ -47,7 +47,7 @@ class MySubscribeCallback(SubscribeCallback):
     def message(self, pubnub, message):
         """Handle new message stored in message.message"""
         msg = message.message
-        logging.info('Recieved message: %s' % msg)
+        logging.info('Received message: %s' % msg)
 
 
 def main(_):
