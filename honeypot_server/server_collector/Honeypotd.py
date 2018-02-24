@@ -6,11 +6,12 @@ from absl import app
 from absl import flags
 from absl import logging
 
-from conf import whitelist
 
-from call_control import Client
-from call_control.Connection import ESLError
-from publisher_notifier import Publisher
+from honeypot_server.conf import whitelist
+
+from honeypot_server.call_control import Client
+from honeypot_server.call_control.Connection import ESLError
+from honeypot_analyzer.publisher_notifier import Publisher
 
 FLAGS = flags.FLAGS
 
