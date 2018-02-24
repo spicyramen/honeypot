@@ -7,9 +7,10 @@ from absl import flags
 from absl import logging
 
 from conf import whitelist
-from freeswitch import Client
-from freeswitch.Connection import ESLError
-from notifications import Publisher
+
+from call_control import Client
+from call_control.Connection import ESLError
+from publisher_notifier import Publisher
 
 FLAGS = flags.FLAGS
 
