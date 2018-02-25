@@ -203,6 +203,7 @@ class ESLHandler(object):
                                 except ValueError as e:
                                     logging.exception(e)
                             elif threat == -1:
+                                logging.info('Adding call to Queue')
                                 self.pending_calls.append((sip_call_id, sip_remote_ip_addr, int(sip_remote_port)))
                                 continue
                         else:

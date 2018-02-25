@@ -1,8 +1,10 @@
+"""Gets call information from Database."""
+
 import datetime
 import pytz
 
-class Call(object):
 
+class Call(object):
     def __init__(self, call_id, source_ip, source_port):
         self.call_id = call_id
         self.source_ip = source_ip
