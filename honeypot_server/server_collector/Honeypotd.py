@@ -6,7 +6,8 @@ from absl import app
 from absl import flags
 from absl import logging
 
-
+from utils import mysql_client
+from honeypot_analyzer.publisher_notifier import Call
 from honeypot_server.conf import whitelist
 
 from honeypot_server.call_control import Client
@@ -20,6 +21,13 @@ flags.DEFINE_integer('port', 8021, 'Freeswitch ESL port')
 
 # Freeswitch ESL IP Address.
 FREESWITCH_HOST = '13.57.9.131'
+
+HOMER_DB_HOST = 'homer.c0rqeeueqq6r.us-west-1.rds.amazonaws.com'
+HOMER_DB_PORT = 3306
+HOMER_DATABASE = 'homer_data'
+HOMER_DB_USER = 'homer_user'
+HOMER_DB_PASSWORD = 'homer_password'
+HOMER_CALL_TABLE = 'homer_data.sip_capture_call_'
 
 # Freeswitch ESL events to Monitor.
 EVENTS = ['BACKGROUND_JOB',
@@ -43,6 +51,9 @@ _SIP_PROTOCOL = 'variable_sip_via_protocol'
 _SIP_REMOTE_PORT = 'variable_sip_network_port'
 _SIP_FROM_STRIPPED = 'variable_sip_from_user_stripped'
 _SIP_FROM = 'variable_sip_full_from'
+
+DB_CLIENT = mysql_client.MySQLClient(username=HOMER_DB_USER, password=HOMER_DB_USER, host=HOMER_DB_HOST,
+                                     port=HOMER_DB_PORT, database=HOMER_DATABASE)
 
 
 class ESLHandler(object):
@@ -152,13 +163,18 @@ class ESLHandler(object):
                                      }
                         # Use PubSub notification systems.
                         if sip_remote_ip_addr not in whitelist.WHITE_LIST:
+                            # Connect to Homer and get Caller information.
+                            caller = Call.CallInfo(sip_call_id, sip_remote_ip_addr, int(sip_remote_port))
+                            call_info = caller.GetCallInfo(DB_CLIENT)
+                            logging.info(call_info)
+                            # Ask Threat analyzer to predict if caller is an Attacker.
                             logging.warning('Threat detected. Remote SIP host: %s ' % sip_remote_ip_addr)
                             logging.info('Call info: %r' % call_info)
                             pubnub.publish(Publisher.CHANNEL, call_info)
                         else:
                             logging.warning(
-                                'Detected IP Address in white list: %s. No notification was sent. Call info: %r' % (
-                                sip_remote_ip_addr, call_info))
+                                'Detected IP Address in Whitelist: %s. No notification was sent. Call info: %r' % (
+                                    sip_remote_ip_addr, call_info))
                 else:
                     logging.info('Listening...')
 

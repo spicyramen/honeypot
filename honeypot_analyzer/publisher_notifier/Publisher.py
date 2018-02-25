@@ -1,12 +1,19 @@
+
+
 from absl import app
 from absl import logging
+
 
 from pubnub.callbacks import SubscribeCallback
 from pubnub.enums import PNStatusCategory
 from pubnub.pnconfiguration import PNConfiguration
 from pubnub.pubnub import PubNub
 
+
 CHANNEL = 'honeypot'
+# TODO Environment Variables
+
+
 
 
 def GetConfig():
