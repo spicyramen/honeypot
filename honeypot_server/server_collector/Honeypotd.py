@@ -60,6 +60,7 @@ class ESLHandler(object):
         self._host = host
         self._port = port
         self._events = events
+        self.pending_calls = []
 
     @property
     def host(self, host):
@@ -85,6 +86,32 @@ class ESLHandler(object):
     def events(self):
         return self._events
 
+    def predict(self, sip_call_id, sip_remote_ip_addr, sip_remote_port, pending):
+        """
+
+        :param sip_call_id:
+        :param sip_remote_ip_addr:
+        :param sip_remote_port:
+        :param pending:
+        :return:
+        """
+
+        caller = Call.Call(sip_call_id, sip_remote_ip_addr, int(sip_remote_port))
+        potential_threat = caller.GetCallInfo(DB_CLIENT)
+        if not potential_threat:
+            logging.error('Call with callid: %s was not found in Database' % sip_call_id)
+            return -1
+
+        # Ask Threat analyzer to predict if caller is an Attacker.
+        potential_threat = [str(call) if call else '' for call in potential_threat]
+        label, stats = threat_prediction.predict(potential_threat)
+        if label == 1:
+            logging.warning('Threat detected %s . Remote SIP host: %s ' % (stats, sip_remote_ip_addr))
+            return 1
+        else:
+            logging.info('No threat %s' % stats)
+            return 0
+
     def listen(self):
         """
 
@@ -93,9 +120,11 @@ class ESLHandler(object):
         try:
             logging.info('Initializing Publisher...')
             # Generate notifications to clients that subscribe service via PubNub (pubnub.com).
+
             pnconfig = Publisher.GetConfig()
             if not isinstance(pnconfig, Publisher.PNConfiguration):
                 raise ValueError('Invalid PubNub configuration')
+
             pubnub = Publisher.Publisher(pnconfig)
 
             logging.info('Listener starting...')
@@ -111,7 +140,7 @@ class ESLHandler(object):
                 logging.exception(e)
 
             logging.info('Connected to %s' % self.host)
-            pending_calls = []
+
             connection = client.con
             connection.events('plain', self.events)
             time.sleep(0.05)
@@ -122,7 +151,8 @@ class ESLHandler(object):
                 if reply:
                     event_name = reply.getHeader('Event-Name')
                     logging.info('Event name: %s' % event_name)
-                    # Call is received.
+
+                   # Call is received.
                     if event_name == 'CHANNEL_CREATE':
                         uuid = reply.getHeader(_CHANNEL_UUID)
                         logging.info('Call UUID: %s' % uuid)
@@ -154,49 +184,44 @@ class ESLHandler(object):
                         # Use PubSub notification systems.
                         if sip_remote_ip_addr not in whitelist.WHITE_LIST:
                             # Connect to Homer and get Caller information.
-                            caller = Call.Call(sip_call_id, sip_remote_ip_addr, int(sip_remote_port))
-                            potential_threat = caller.GetCallInfo(DB_CLIENT)
-                            if not potential_threat:
-                                logging.error('Call with callid: %s was not found in Database' % sip_call_id)
-                                pending_calls.append((sip_call_id, sip_remote_ip_addr, int(sip_remote_port)))
-                                continue
-                            # Ask Threat analyzer to predict if caller is an Attacker.
-                            potential_threat = [str(call) if call else '' for call in potential_threat]
-                            label, stats = threat_prediction.predict(potential_threat)
-                            if label == 1:
-                                logging.warning(
-                                    'Threat detected %s . Remote SIP host: %s ' % (stats, sip_remote_ip_addr))
+                            threat = self.predict(sip_call_id, sip_remote_ip_addr, int(sip_remote_port), False)
+                            if threat == 1:
+                                call_info = {"Honeypot": pnconfig.uuid,
+                                             "RemoteIpv4": sip_remote_ip_addr,
+                                             "SipProtocol": sip_protocol,
+                                             "SipRemotePort": sip_remote_port,
+                                             "SipFrom": sip_from,
+                                             "SipFromStripped": sip_from_stripped,
+                                             "SipTo": sip_to_user,
+                                             "RequestUri": sip_req_uri,
+                                             "SipCallid": sip_call_id
+                                             }
+                                logging.info('Notifying Subscribers: Call info: %s' % call_info)
+                                # Notify Network via PubNub.
                                 try:
-                                    call_info = {"Honeypot": pnconfig.uuid,
-                                                 "RemoteIpv4": sip_remote_ip_addr,
-                                                 "SipProtocol": sip_protocol,
-                                                 "SipRemotePort": sip_remote_port,
-                                                 "SipFrom": sip_from,
-                                                 "SipFromStripped": sip_from_stripped,
-                                                 "SipTo": sip_to_user,
-                                                 "RequestUri": sip_req_uri,
-                                                 "SipCallid": sip_call_id
-                                                 }
-                                    logging.info('Notifying Subscribers: Call info: %s' % call_info)
-                                    # Notify Network via PubNub.
                                     pubnub.publish(Publisher.CHANNEL, call_info)
                                 except ValueError as e:
                                     logging.exception(e)
-                            else:
-                                logging.info('No threat %s' % stats)
+                            elif threat == -1:
+                                self.pending_calls.append((sip_call_id, sip_remote_ip_addr, int(sip_remote_port)))
+                                continue
                         else:
                             logging.warning(
                                 'Detected IP Address in Whitelist: %s. No notification was sent.' % sip_remote_ip_addr)
 
                 else:
                     logging.info('Listening...')
+                    if len(self.pending_calls) > 1:
+                        logging.warning('%d Calls in Queue' % len(self.pending_calls))
+                    #TODO Process asyncronously (Celery/RabbitMQ)
 
         except KeyboardInterrupt:
             logging.warning('Exiting manually...')
-            logging.info('Pending calls to process: %d' % pending_calls)
+            logging.info('Pending calls to process: %d' % self.pending_calls)
 
 
 def main(_):
+    # Connect to Freeswitch.
     listener_instance = ESLHandler(settings.FREESWITCH_HOST, FLAGS.port, ' '.join(EVENTS))
     listener_instance.listen()
 
