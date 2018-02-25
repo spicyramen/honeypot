@@ -4,23 +4,33 @@ import os
 
 from googleapiclient import discovery, errors
 from oauth2client.client import GoogleCredentials
+from oauth2client.client import ApplicationDefaultCredentialsError
 
 from absl import app
 from absl import flags
 from absl import logging
 
+from honeypot_server.conf import settings
+
 PROJECT_ID = 'honeypotprediction'
-BUCKET = 'honeypot_invite/INVITE_20180218_20180223_TRAINING.csv'
 MODEL_ID = 'toll_fraud'
 MODEL_TYPE = 'CLASSIFICATION'
+
+BUCKET = 'honeypot_invite/INVITE_20180218_20180223_TRAINING.csv'
 PREDICTIONS_FILE = 'predictions.csv'
+
+
 
 FLAGS = flags.FLAGS
 
 
 def get_service():
     """Get Service from Google Cloud API"""
-    credentials = GoogleCredentials.get_application_default()
+    try:
+        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = '%s' % settings.CREDENTIALS
+        credentials = GoogleCredentials.get_application_default()
+    except ApplicationDefaultCredentialsError as e:
+        logging.exception(e)
     return discovery.build('prediction', 'v1.6', credentials=credentials)
 
 
@@ -53,26 +63,31 @@ def read_predictions():
         return f.readline()
 
 
-def predict():
-    logging.info('Perform predictions')
+def predict(individual_prediction):
+    """
+
+    :param individual_prediction: (list) List of values.
+    :return:
+    """
+    logging.info('Perform predictions for %r' % individual_prediction)
     api = get_service()
-    individual_prediction = read_predictions()
-    logging.info(individual_prediction)
     prediction = api.trainedmodels().predict(project=PROJECT_ID, id=MODEL_ID, body={
         'input': {
-            'csvInstance': individual_prediction.split(',')
+            'csvInstance': individual_prediction
         },
     }).execute()
     label = prediction.get('outputLabel')
     stats = prediction.get('outputMulti')
-    logging.info('Label %s Stats: %s' % (label, stats))
+    logging.info('Label: %s Stats: %s' % (label, stats))
+    return int(label), stats
 
 
 def main(_):
-    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = 'HoneypotPrediction-9b60e5338cf8.json'
-    get_model_training_status()
-    check_model()
-    predict()
+
+    # get_model_training_status()
+    # check_model()
+    individual_prediction = read_predictions().split(',')
+    predict(individual_prediction)
 
 
 if __name__ == '__main__':

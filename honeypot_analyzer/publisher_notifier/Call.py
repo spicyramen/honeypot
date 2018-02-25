@@ -1,5 +1,5 @@
 import datetime
-
+import pytz
 
 class Call(object):
 
@@ -14,7 +14,8 @@ class Call(object):
         :param db_client:
         :return:
         """
-        today = datetime.datetime.now().strftime('%Y%m%d')
+        # Make it UTC aware
+        today = datetime.datetime.now(pytz.UTC).strftime('%Y%m%d')
         query = """
         SELECT
             ruri,

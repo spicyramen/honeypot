@@ -6,28 +6,21 @@ from absl import app
 from absl import flags
 from absl import logging
 
-from utils import mysql_client
 from honeypot_analyzer.publisher_notifier import Call
+from honeypot_analyzer.threat_analyzer.prediction import threat_prediction
+from honeypot_server.conf import settings
 from honeypot_server.conf import whitelist
 
 from honeypot_server.call_control import Client
 from honeypot_server.call_control.Connection import ESLError
 from honeypot_analyzer.publisher_notifier import Publisher
 
+from utils import mysql_client
+
 FLAGS = flags.FLAGS
 
 flags.DEFINE_string('host', '127.0.0.1', 'Freeswitch ESL server')
 flags.DEFINE_integer('port', 8021, 'Freeswitch ESL port')
-
-# Freeswitch ESL IP Address.
-FREESWITCH_HOST = '13.57.9.131'
-
-HOMER_DB_HOST = 'homer.c0rqeeueqq6r.us-west-1.rds.amazonaws.com'
-HOMER_DB_PORT = 3306
-HOMER_DATABASE = 'homer_data'
-HOMER_DB_USER = 'homer_user'
-HOMER_DB_PASSWORD = 'homer_password'
-HOMER_CALL_TABLE = 'homer_data.sip_capture_call_'
 
 # Freeswitch ESL events to Monitor.
 EVENTS = ['BACKGROUND_JOB',
@@ -40,6 +33,7 @@ EVENTS = ['BACKGROUND_JOB',
           'CHANNEL_HANGUP',
           'CHAN_NOT_IMPLEMENTED']
 
+# Freeswitch variables.
 _CHANNEL_UUID = 'Channel-Call-UUID'
 _SIP_CALL_ID = 'variable_sip_call_id'
 _SIP_TERM_STATUS = 'variable_sip_term_status'
@@ -52,12 +46,15 @@ _SIP_REMOTE_PORT = 'variable_sip_network_port'
 _SIP_FROM_STRIPPED = 'variable_sip_from_user_stripped'
 _SIP_FROM = 'variable_sip_full_from'
 
-DB_CLIENT = mysql_client.MySQLClient(username=HOMER_DB_USER, password=HOMER_DB_USER, host=HOMER_DB_HOST,
-                                     port=HOMER_DB_PORT, database=HOMER_DATABASE)
+DB_CLIENT = mysql_client.MySQLClient(username=settings.HOMER_DB_USER,
+                                     password=settings.HOMER_DB_PASSWORD,
+                                     host=settings.HOMER_DB_HOST,
+                                     port=settings.HOMER_DB_PORT,
+                                     database=settings.HOMER_DATABASE)
 
 
 class ESLHandler(object):
-    """Gets ESL signals from Freeswitch."""
+    """Listens for Event Socket Layer ESL signals from Freeswitch."""
 
     def __init__(self, host, port, events):
         self._host = host
@@ -94,8 +91,8 @@ class ESLHandler(object):
         :return:
         """
         try:
-            # Generate notifications to clients that subscribe service.
             logging.info('Initializing Publisher...')
+            # Generate notifications to clients that subscribe service via PubNub (pubnub.com).
             pnconfig = Publisher.GetConfig()
             if not isinstance(pnconfig, Publisher.PNConfiguration):
                 raise ValueError('Invalid PubNub configuration')
@@ -104,14 +101,17 @@ class ESLHandler(object):
             logging.info('Listener starting...')
             if not self.host:
                 raise ValueError('Invalid host')
-
-            client = Client.Client(host=self.host)
-            logging.info('Connecting to Freeswitch: %s ...' % self.host)
-            client.connect()
-            if not client.connected():
-                raise ValueError('Unable to connect to %s' % self.host)
+            try:
+                client = Client.Client(host=self.host)
+                logging.info('Connecting to Freeswitch: %s ...' % self.host)
+                client.connect()
+                if not client.connected():
+                    raise ValueError('Unable to connect to %s' % self.host)
+            except ESLError as e:
+                logging.exception(e)
 
             logging.info('Connected to %s' % self.host)
+            pending_calls = []
             connection = client.con
             connection.events('plain', self.events)
             time.sleep(0.05)
@@ -150,42 +150,54 @@ class ESLHandler(object):
                                                                                      sip_call_id, sip_term_status,
                                                                                      sip_invite_failure_phrase))
                         logging.info('Send event to Threat Analyzer...')
-                        # Notify Network.
-                        call_info = {"Honeypot": pnconfig.uuid,
-                                     "RemoteIpv4": sip_remote_ip_addr,
-                                     "SipProtocol": sip_protocol,
-                                     "SipRemotePort": sip_remote_port,
-                                     "SipFrom": sip_from,
-                                     "SipFromStripped": sip_from_stripped,
-                                     "SipTo": sip_to_user,
-                                     "RequestUri": sip_req_uri,
-                                     "SipCallid": sip_call_id
-                                     }
+
                         # Use PubSub notification systems.
                         if sip_remote_ip_addr not in whitelist.WHITE_LIST:
                             # Connect to Homer and get Caller information.
-                            caller = Call.CallInfo(sip_call_id, sip_remote_ip_addr, int(sip_remote_port))
-                            call_info = caller.GetCallInfo(DB_CLIENT)
-                            logging.info(call_info)
+                            caller = Call.Call(sip_call_id, sip_remote_ip_addr, int(sip_remote_port))
+                            potential_threat = caller.GetCallInfo(DB_CLIENT)
+                            if not potential_threat:
+                                logging.error('Call with callid: %s was not found in Database' % sip_call_id)
+                                pending_calls.append((sip_call_id, sip_remote_ip_addr, int(sip_remote_port)))
+                                continue
                             # Ask Threat analyzer to predict if caller is an Attacker.
-                            logging.warning('Threat detected. Remote SIP host: %s ' % sip_remote_ip_addr)
-                            logging.info('Call info: %r' % call_info)
-                            pubnub.publish(Publisher.CHANNEL, call_info)
+                            potential_threat = [str(call) if call else '' for call in potential_threat]
+                            label, stats = threat_prediction.predict(potential_threat)
+                            if label == 1:
+                                logging.warning(
+                                    'Threat detected %s . Remote SIP host: %s ' % (stats, sip_remote_ip_addr))
+                                try:
+                                    call_info = {"Honeypot": pnconfig.uuid,
+                                                 "RemoteIpv4": sip_remote_ip_addr,
+                                                 "SipProtocol": sip_protocol,
+                                                 "SipRemotePort": sip_remote_port,
+                                                 "SipFrom": sip_from,
+                                                 "SipFromStripped": sip_from_stripped,
+                                                 "SipTo": sip_to_user,
+                                                 "RequestUri": sip_req_uri,
+                                                 "SipCallid": sip_call_id
+                                                 }
+                                    logging.info('Notifying Subscribers: Call info: %s' % call_info)
+                                    # Notify Network via PubNub.
+                                    pubnub.publish(Publisher.CHANNEL, call_info)
+                                except ValueError as e:
+                                    logging.exception(e)
+                            else:
+                                logging.info('No threat %s' % stats)
                         else:
                             logging.warning(
-                                'Detected IP Address in Whitelist: %s. No notification was sent. Call info: %r' % (
-                                    sip_remote_ip_addr, call_info))
+                                'Detected IP Address in Whitelist: %s. No notification was sent.' % sip_remote_ip_addr)
+
                 else:
                     logging.info('Listening...')
 
-        except ESLError as e:
-            logging.exception(e)
         except KeyboardInterrupt:
             logging.warning('Exiting manually...')
+            logging.info('Pending calls to process: %d' % pending_calls)
 
 
 def main(_):
-    listener_instance = ESLHandler(FREESWITCH_HOST, FLAGS.port, ' '.join(EVENTS))
+    listener_instance = ESLHandler(settings.FREESWITCH_HOST, FLAGS.port, ' '.join(EVENTS))
     listener_instance.listen()
 
 

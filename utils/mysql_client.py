@@ -1,5 +1,7 @@
 """This is a MySQL client which allows connection to database."""
 
+from absl import logging
+
 import MySQLdb as mdb
 
 
@@ -48,6 +50,6 @@ class MySQLClient(object):
         cursor = self.cnx.cursor()
         cursor.execute(query)
         if cursor.rowcount < 1:
-            raise ValueError('No results')
+            logging.error('No information')
         return cursor.fetchone()
 
