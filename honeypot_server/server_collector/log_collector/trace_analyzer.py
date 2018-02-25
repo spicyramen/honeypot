@@ -1,3 +1,13 @@
+"""Read SIP Messages from freeswitch.log.
+
+Read SIP messages from Freeswitch and transforms them into a flatten view.
+Verify the following debug information is configured:
+
+    fsctl loglevel 3
+    sofia tracelevel 3
+    sofia profile external siptrace on
+"""
+
 import re
 import sys
 
